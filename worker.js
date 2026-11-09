@@ -4,6 +4,8 @@ const MT = ["mafia", "godfather"];
 const ACT = { mafia: "kill", godfather: "kill", killer: "kill", detective: "ins", doctor: "save", bodyguard: "save" };
 const AVN = ["Zakaria", "Rayan", "Sofia", "Alex", "Dreamer", "Luna", "MarocKing"];
 const TTD = { role: 15, night: 45, day: 120, vote: 40, elim: 15 }; // default seconds per phase (host can change)
+const CFGD = { auto: 1, mafia: 1, godfather: 0, doctor: 1, detective: 1, bodyguard: 0, killer: 0 };
+const CR_ = { mafia: [0, 3], godfather: [0, 1], doctor: [0, 2], detective: [0, 2], bodyguard: [0, 1], killer: [0, 1] }; // host-adjustable role counts
 const TR = { night: [20, 120], day: [30, 300], vote: [15, 120], elim: [5, 30] }; // allowed ranges
 const rnd = a => a[Math.floor(Math.random() * a.length)];
 const shuf = a => a.map(x => [Math.random(), x]).sort((p, q) => p[0] - q[0]).map(x => x[1]);
@@ -160,7 +162,7 @@ export class Room {
   constructor(ctx) { this.ctx = ctx; this.reset(); }
   reset() {
     clearTimeout(this.tm); clearTimeout(this.idleT);
-    Object.assign(this, { exists: false, code: "", ph: "lobby", P: [], cap: 7, bots: true, host: null, day: 0, dl: 0, act: {}, vt: {}, dead: [], el: null, w: "", seq: 0, tt: { ...TTD }, sk: new Set() });
+    Object.assign(this, { exists: false, code: "", ph: "lobby", P: [], cap: 7, bots: true, host: null, day: 0, dl: 0, act: {}, vt: {}, dead: [], el: null, w: "", seq: 0, tt: { ...TTD }, sk: new Set(), cfg: { ...CFGD } });
   }
   async fetch(req) {
     const [c, s] = Object.values(new WebSocketPair());
@@ -180,7 +182,7 @@ export class Room {
   view(p) {
     const end = this.ph === "end";
     return {
-      t: "state", tt: this.tt, sk: this.sk.size, code: this.code, ph: this.ph, day: this.day, dl: this.dl, now: Date.now(), cap: this.cap, bots: this.bots, host: this.host, you: p.id, w: this.w,
+      t: "state", cfg: this.cfg, tt: this.tt, sk: this.sk.size, code: this.code, ph: this.ph, day: this.day, dl: this.dl, now: Date.now(), cap: this.cap, bots: this.bots, host: this.host, you: p.id, w: this.w,
       players: this.P.map(q => ({ id: q.id, name: q.name, av: q.av, country: q.country || "", alive: q.alive, conn: q.conn, bot: q.bot, ready: q.ready, host: q.id === this.host, role: (end || q.id === p.id || (!q.alive && this.ph !== "lobby")) ? q.role : undefined })),
       mates: MT.includes(p.role) ? this.P.filter(q => MT.includes(q.role) && q.id !== p.id).map(q => q.id) : [],
       insp: p.insp && p.insp.day === this.day ? p.insp : null,
@@ -195,9 +197,11 @@ export class Room {
     const p = this.pl(ws.pid);
     if (!p || p.ws !== ws) return;
     if (d.t === "ready" && this.ph === "lobby") { p.ready = !!d.v; this.push(); }
-    else if (d.t === "cap" && this.ph === "lobby" && p.id === this.host) { this.cap = Math.min(7, Math.max(5, this.P.length, Math.floor(+d.v) || 7)); this.push(); }
+    else if (d.t === "cap" && this.ph === "lobby" && p.id === this.host) { this.cap = Math.min(10, Math.max(5, this.P.length, Math.floor(+d.v) || 7)); this.push(); }
     else if (d.t === "bots" && this.ph === "lobby" && p.id === this.host) { this.bots = !!d.v; this.push(); }
     else if (d.t === "tt" && this.ph === "lobby" && p.id === this.host) { const r = TR[d.k]; if (r) { this.tt[d.k] = Math.min(r[1], Math.max(r[0], Math.round(+d.v) || this.tt[d.k])); this.push(); } }
+    else if (d.t === "cfg" && this.ph === "lobby" && p.id === this.host) { if (d.k === "auto") this.cfg.auto = d.v ? 1 : 0; else if (CR_[d.k]) this.cfg[d.k] = Math.min(CR_[d.k][1], Math.max(CR_[d.k][0], Math.round(+d.v) || 0)); this.push(); }
+    else if (d.t === "again") this.again(p);
     else if (d.t === "skip") this.skip(p);
     else if (d.t === "start") this.start(ws, p);
     else if (d.t === "leave") this.leave(p);
@@ -251,24 +255,29 @@ export class Room {
   start(ws, p) {
     if (this.ph !== "lobby" || p.id !== this.host) return;
     if (!this.humans().filter(x => x.id !== this.host).every(x => x.ready)) return this.err(ws, "wait");
+    const n = this.bots ? Math.max(this.cap, this.P.length) : this.P.length, c = this.cfg; // player count the match will really have
+    if (n < 5) return this.err(ws, "min");
+    if (!c.auto) { const mt = c.mafia + c.godfather; if (mt < 1 || mt * 2 >= n || mt + c.doctor + c.detective + c.bodyguard + c.killer > n) return this.err(ws, "roles"); }
     if (this.bots) this.fillBots();
-    if (this.P.length < 5) return this.err(ws, "min");
     this.begin();
   }
   fillBots() { // bots only take EMPTY seats; real players are never replaced
     while (this.P.length < this.cap) {
       const used = new Set(this.P.map(x => x.av)); let a = [0, 1, 2, 3, 4, 5, 6].find(i => !used.has(i)); if (a === undefined) a = Math.floor(Math.random() * 7);
-      const nm = this.P.some(x => x.name.toLowerCase() === AVN[a].toLowerCase()) ? "Bot" + (a + 1) : AVN[a];
+      let nm = AVN[a]; for (let k = 1; this.P.some(x => x.name.toLowerCase() === nm.toLowerCase()); k++) nm = "Bot" + k;
       this.P.push({ id: "b" + (++this.seq), name: nm, av: a, ready: true, bot: true, conn: true, ws: null, alive: true, role: "" });
     }
   }
   begin() {
     const n = this.P.length, m = Math.max(1, Math.floor(n / 3));
-    let r = [n >= 7 ? "godfather" : "mafia"];
-    for (let i = 1; i < m; i++) r.push("mafia");
-    r.push("detective", "doctor");
-    if (n >= 8) r.push("bodyguard");
-    if (n >= 9) r.push("killer");
+    let r = [];
+    if (this.cfg.auto) {
+      r = [n >= 7 ? "godfather" : "mafia"];
+      for (let i = 1; i < m; i++) r.push("mafia");
+      r.push("detective", "doctor");
+      if (n >= 8) r.push("bodyguard");
+      if (n >= 9) r.push("killer");
+    } else for (const k of ["mafia", "godfather", "detective", "doctor", "bodyguard", "killer"]) for (let i = 0; i < this.cfg[k]; i++) r.push(k);
     while (r.length < n) r.push("citizen");
     r = shuf(r);
     this.P.forEach((p, i) => { p.role = r[i]; p.alive = true; p.insp = null; });
@@ -282,6 +291,14 @@ export class Room {
     if (ph === "day") this.sk = new Set();
     const nx = { role: () => this.setPh("night"), night: () => this.resolve(), day: () => this.setPh("vote"), vote: () => this.tally(), elim: () => this.setPh(this.w ? "end" : "night") }[ph];
     if (nx) this.tm = setTimeout(nx, this.tt[ph] * 1000);
+    this.push();
+  }
+  again(p) { // host starts a rematch in the same room: bots leave, humans return to the waiting room
+    if (this.ph !== "end" || p.id !== this.host) return;
+    clearTimeout(this.tm);
+    this.P = this.P.filter(x => !x.bot);
+    this.P.forEach(x => { x.ready = false; x.alive = true; x.role = ""; x.insp = null; });
+    Object.assign(this, { ph: "lobby", day: 0, dl: 0, act: {}, vt: {}, dead: [], el: null, w: "", sk: new Set() });
     this.push();
   }
   skip(p) { // players can agree to end the discussion early; the server still owns the clock
