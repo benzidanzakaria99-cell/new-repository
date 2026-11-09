@@ -5,9 +5,9 @@ compatibility_date = "2025-09-01"
 # Paste your Google OAuth Client ID between the quotes (it is public, not a secret).
 # Leave it empty to keep the game in guest mode.
 [vars]
-GOOGLE_CLIENT_ID = ""
+GOOGLE_CLIENT_ID = "141691783636-
 # Your contact email, shown on the privacy page (/privacy).
-CONTACT_EMAIL = ""
+CONTACT_EMAIL = "benzidanzakaria99@gmail.com "
 
 [[durable_objects.bindings]]
 name = "ROOM"
