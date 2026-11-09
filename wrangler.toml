@@ -7,7 +7,7 @@ compatibility_date = "2025-09-01"
 [vars]
 GOOGLE_CLIENT_ID = "141691783636-
 # Your contact email, shown on the privacy page (/privacy).
-CONTACT_EMAIL = benzidanzakaria99@gmail.com ""
+CONTACT_EMAIL = benzidanzakaria99@gmail.com "
 
 [[durable_objects.bindings]]
 name = "ROOM"
