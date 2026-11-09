@@ -1,34 +1,150 @@
-import PAGE from "./page.js";
 // MAFIA WORLD server: Cloudflare Worker + one Durable Object per room.
 // The Room object is the ONLY place that knows every role. Each player is sent only their own role.
 const MT = ["mafia", "godfather"];
 const ACT = { mafia: "kill", godfather: "kill", killer: "kill", detective: "ins", doctor: "save", bodyguard: "save" };
 const AVN = ["Zakaria", "Rayan", "Sofia", "Alex", "Dreamer", "Luna", "MarocKing"];
-const TT = { role: 12, night: 25, day: 25, vote: 20, elim: 7 }; // seconds per phase
+const TTD = { role: 15, night: 45, day: 120, vote: 40, elim: 15 }; // default seconds per phase (host can change)
+const TR = { night: [20, 120], day: [30, 300], vote: [15, 120], elim: [5, 30] }; // allowed ranges
 const rnd = a => a[Math.floor(Math.random() * a.length)];
 const shuf = a => a.map(x => [Math.random(), x]).sort((p, q) => p[0] - q[0]).map(x => x[1]);
 const clean = s => String(s || "").replace(/[<>&"'`]/g, "").trim().slice(0, 14) || "Player";
 const av = n => ((Math.floor(+n) || 0) % 7 + 7) % 7;
 const maj = a => { const c = {}; a.forEach(x => c[x] = (c[x] || 0) + 1); const m = Math.max(...Object.values(c)); return rnd(Object.keys(c).filter(k => c[k] === m)); };
 
+import PAGE from "./page.js";
+const enc = new TextEncoder(), dec = new TextDecoder();
+const b64u = b => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const unb64 = s => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
+let JW = { t: 0, k: [] }, SEC = "";
+// Verifies a Google ID token (RS256) against Google's public keys, our client id, issuer and expiry.
+async function googleVerify(tok, cid) {
+  const [h, p, s] = tok.split("."); if (!s) throw 0;
+  const H = JSON.parse(dec.decode(unb64(h))); if (H.alg !== "RS256") throw 0;
+  if (!JW.k.some(k => k.kid === H.kid) || Date.now() - JW.t > 36e5) { const r = await fetch("https://www.googleapis.com/oauth2/v3/certs"); JW = { t: Date.now(), k: (await r.json()).keys }; }
+  const jwk = JW.k.find(k => k.kid === H.kid); if (!jwk) throw 0;
+  const key = await crypto.subtle.importKey("jwk", jwk, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
+  if (!await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, unb64(s), enc.encode(h + "." + p))) throw 0;
+  const c = JSON.parse(dec.decode(unb64(p)));
+  if (!["https://accounts.google.com", "accounts.google.com"].includes(c.iss) || c.aud !== cid || c.exp * 1000 < Date.now() || !c.sub) throw 0;
+  return c;
+}
+const acc = (env, path, body) => env.ACCOUNTS.get(env.ACCOUNTS.idFromName("main")).fetch("https://acc" + path, { method: "POST", body: JSON.stringify(body || {}) });
+async function hmac(sec, msg) { const k = await crypto.subtle.importKey("raw", enc.encode(sec), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]); return b64u(await crypto.subtle.sign("HMAC", k, enc.encode(msg))); }
+async function secret(env) { if (!SEC) SEC = (await (await acc(env, "/secret")).json()).s; return SEC; }
+async function mkSession(env, uid) { const m = uid + "." + (Date.now() + 30 * 864e5); return m + "." + await hmac(await secret(env), m); }
+async function session(req, env) {
+  const m = (req.headers.get("Cookie") || "").match(/(?:^|; )mw_s=([^;]+)/); if (!m) return null;
+  const [u, e, sg] = m[1].split("."); if (!sg || +e < Date.now()) return null;
+  return (await hmac(await secret(env), u + "." + e)) === sg ? u : null;
+}
+async function api(req, env, u) {
+  const J = (o, s = 200, h = {}) => new Response(JSON.stringify(o), { status: s, headers: { "content-type": "application/json", ...h } }), p = u.pathname;
+  if (p === "/api/config") return J({ cid: env.GOOGLE_CLIENT_ID || "" });
+  if (!env.GOOGLE_CLIENT_ID) return J({ e: "off" }, 404);
+  const o = req.headers.get("Origin"); if (req.method === "POST" && o && o !== u.origin) return J({ e: "origin" }, 403);
+  const ck = (v, age) => `mw_s=${v}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${age}`;
+  if (p === "/api/logout" && req.method === "POST") return J({ ok: 1 }, 200, { "set-cookie": ck("", 0) });
+  if (p === "/api/login" && req.method === "POST") {
+    let c; try { c = await googleVerify(String((await req.json()).credential || ""), env.GOOGLE_CLIENT_ID); } catch (e) { return J({ e: "token" }, 401); }
+    const r = await (await acc(env, "/login", { sub: c.sub, email: c.email_verified ? c.email : "", name: c.given_name || c.name || "Player" })).json();
+    return J({ user: r.user }, 200, { "set-cookie": ck(await mkSession(env, r.user.id), 2592000) });
+  }
+  const uid = await session(req, env); if (!uid) return J({ e: "auth" }, 401);
+  if (p === "/api/me" && req.method === "GET") { const r = await (await acc(env, "/get", { id: uid })).json(); return r.user ? J({ user: r.user }) : J({ e: "auth" }, 401); }
+  if (p === "/api/profile" && req.method === "POST") { let b = {}; try { b = await req.json(); } catch (e) {} const r = await (await acc(env, "/update", { id: uid, nick: b.nick, av: b.av, country: b.country })).json(); return r.user ? J({ user: r.user }) : J({ e: "auth" }, 401); }
+  if (p === "/api/friends" && req.method === "GET") return J(await (await acc(env, "/fr/list", { id: uid })).json());
+  if (p === "/api/ping" && req.method === "POST") { let b = {}; try { b = await req.json(); } catch (e) {} await acc(env, "/ping", { id: uid, room: String(b.room || "").toUpperCase() }); return J({ ok: 1 }); }
+  const fm = p.match(/^\/api\/friends\/(add|accept|decline|remove|cancel)$/);
+  if (fm && req.method === "POST") { let b = {}; try { b = await req.json(); } catch (e) {} const o = await (await acc(env, fm[1] === "add" ? "/fr/add" : fm[1] === "accept" ? "/fr/acc" : "/fr/del", { id: uid, code: b.code, other: String(b.id || "") })).json(); return J(o, o.e ? 400 : 200); }
+  if (p === "/api/delete" && req.method === "POST") { await acc(env, "/delete", { id: uid }); return J({ ok: 1 }, 200, { "set-cookie": ck("", 0) }); }
+  return J({ e: "nf" }, 404);
+}
 export default {
   async fetch(req, env) {
-    const m = new URL(req.url).pathname.match(/^\/ws\/([A-Za-z0-9]{4,6})$/);
+    const u = new URL(req.url);
+    if (u.pathname.startsWith("/api/")) return api(req, env, u);
+    const m = u.pathname.match(/^\/ws\/([A-Za-z0-9]{4,6})$/);
     if (!m) return new Response(PAGE, { headers: { "content-type": "text/html; charset=utf-8" } });
     if (req.headers.get("Upgrade") !== "websocket") return new Response("WebSocket only", { status: 426 });
-    return env.ROOM.get(env.ROOM.idFromName(m[1].toUpperCase())).fetch(req);
+    const h = new Headers(req.headers); ["x-uid", "x-nick", "x-av", "x-country"].forEach(k => h.delete(k)); // never trust client-sent identity headers
+    if (env.GOOGLE_CLIENT_ID) {
+      const uid = await session(req, env); if (!uid) return new Response("login", { status: 401 });
+      const r = await (await acc(env, "/get", { id: uid })).json(); if (!r.user) return new Response("login", { status: 401 });
+      h.set("x-uid", r.user.id); h.set("x-nick", encodeURIComponent(r.user.nick)); h.set("x-av", String(r.user.av)); h.set("x-country", r.user.country || "");
+    }
+    return env.ROOM.get(env.ROOM.idFromName(m[1].toUpperCase())).fetch(new Request(req, { headers: h }));
   },
 };
+
+// Accounts live in one Durable Object with built-in SQLite. Stored: Google id, verified email, nickname, avatar, country.
+const pub = u => ({ id: u.id, nick: u.nick, av: u.av, country: u.country || "", code: u.code || "" });
+const FA = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+export class Accounts {
+  constructor(ctx) {
+    this.sql = ctx.storage.sql;
+    this.sql.exec("CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, sub TEXT UNIQUE, email TEXT, nick TEXT, av INTEGER, country TEXT, created INTEGER, last INTEGER)");
+    this.sql.exec("CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT)");
+    for (const c of ["code TEXT", "seen INTEGER", "room TEXT"]) { try { this.sql.exec("ALTER TABLE users ADD COLUMN " + c); } catch (e) {} }
+    this.sql.exec("CREATE UNIQUE INDEX IF NOT EXISTS ucode ON users(code)");
+    this.sql.exec("CREATE TABLE IF NOT EXISTS fr(a TEXT, b TEXT, s TEXT, t INTEGER, PRIMARY KEY(a,b))"); // s: p = pending a->b, f = friends (stored both ways)
+    this.fail = new Map();
+  }
+  row(q, ...b) { return this.sql.exec(q, ...b).toArray()[0]; }
+  fcode() { for (;;) { const c = Array.from(crypto.getRandomValues(new Uint8Array(8)), x => FA[x % 32]).join(""); if (!this.row("SELECT 1 AS x FROM users WHERE code=?", c)) return c; } }
+  ensure(u) { if (!u.code) { this.sql.exec("UPDATE users SET code=? WHERE id=?", this.fcode(), u.id); u = this.row("SELECT * FROM users WHERE id=?", u.id); } return u; }
+  pf(u, now) { const on = u.seen && u.seen > now - 90000; return { id: u.id, nick: u.nick, av: u.av, country: u.country || "", online: !!on, room: on ? (u.room || "") : "" }; }
+  lst(id) { const now = Date.now(), q = s => this.sql.exec(s, id).toArray().map(u => this.pf(u, now));
+    return { friends: q("SELECT u.* FROM fr JOIN users u ON u.id=fr.b WHERE fr.a=? AND fr.s='f' ORDER BY u.nick"), incoming: q("SELECT u.* FROM fr JOIN users u ON u.id=fr.a WHERE fr.b=? AND fr.s='p'"), outgoing: q("SELECT u.* FROM fr JOIN users u ON u.id=fr.b WHERE fr.a=? AND fr.s='p'") }; }
+  addF(id, code) {
+    const f = this.fail.get(id) || [0, Date.now()]; if (Date.now() - f[1] > 6e4) { f[0] = 0; f[1] = Date.now(); }
+    if (f[0] >= 10) return { e: "limit" }; // throttle code guessing
+    const o = this.row("SELECT * FROM users WHERE code=?", String(code || "").toUpperCase().trim());
+    if (!o) { f[0]++; this.fail.set(id, f); return { e: "nf" }; }
+    if (o.id === id) return { e: "self" };
+    if (this.row("SELECT 1 AS x FROM fr WHERE a=? AND b=?", id, o.id)) return { ok: 1 };
+    if (this.row("SELECT 1 AS x FROM fr WHERE a=? AND b=? AND s='p'", o.id, id)) { this.sql.exec("UPDATE fr SET s='f' WHERE a=? AND b=?", o.id, id); this.sql.exec("INSERT INTO fr VALUES(?,?,'f',?)", id, o.id, Date.now()); return { ok: 1, st: "f" }; }
+    if (this.row("SELECT COUNT(*) AS n FROM fr WHERE a=? AND s='p'", id).n >= 50) return { e: "limit" };
+    this.sql.exec("INSERT INTO fr VALUES(?,?,'p',?)", id, o.id, Date.now()); return { ok: 1, st: "p" };
+  }
+  accF(id, o) { if (!this.row("SELECT 1 AS x FROM fr WHERE a=? AND b=? AND s='p'", o, id)) return { e: "nf" }; this.sql.exec("UPDATE fr SET s='f' WHERE a=? AND b=?", o, id); this.sql.exec("INSERT OR REPLACE INTO fr VALUES(?,?,'f',?)", id, o, Date.now()); return { ok: 1 }; }
+  delF(id, o) { this.sql.exec("DELETE FROM fr WHERE (a=? AND b=?) OR (a=? AND b=?)", id, o, o, id); return { ok: 1 }; }
+  async fetch(req) {
+    const p = new URL(req.url).pathname, b = await req.json().catch(() => ({})), J = o => new Response(JSON.stringify(o));
+    if (p === "/secret") { let r = this.row("SELECT v FROM kv WHERE k='secret'"); if (!r) { const s = b64u(crypto.getRandomValues(new Uint8Array(32))); this.sql.exec("INSERT INTO kv VALUES('secret',?)", s); r = { v: s }; } return J({ s: r.v }); }
+    if (p === "/login") {
+      let u = this.row("SELECT * FROM users WHERE sub=?", String(b.sub)); const now = Date.now();
+      if (!u) { const id = crypto.randomUUID(); this.sql.exec("INSERT INTO users(id,sub,email,nick,av,country,created,last,code) VALUES(?,?,?,?,?,?,?,?,?)", id, String(b.sub), String(b.email || "").slice(0, 120), clean(String(b.name || "").split(" ")[0]), Math.floor(Math.random() * 7), "", now, now, this.fcode()); u = this.row("SELECT * FROM users WHERE id=?", id); }
+      else this.sql.exec("UPDATE users SET last=? WHERE id=?", now, u.id);
+      return J({ user: pub(this.ensure(this.row("SELECT * FROM users WHERE id=?", u.id))) });
+    }
+    if (p === "/get") { const u = this.row("SELECT * FROM users WHERE id=?", String(b.id)); return J({ user: u ? pub(this.ensure(u)) : null }); }
+    if (p === "/update") {
+      const u = this.row("SELECT * FROM users WHERE id=?", String(b.id)); if (!u) return J({ user: null });
+      const c = String(b.country || "").toUpperCase();
+      this.sql.exec("UPDATE users SET nick=?, av=?, country=? WHERE id=?", clean(b.nick), av(b.av), /^[A-Z]{2}$/.test(c) ? c : "", u.id);
+      return J({ user: pub(this.ensure(this.row("SELECT * FROM users WHERE id=?", u.id))) });
+    }
+    if (p === "/ping") { const r = String(b.room || ""); this.sql.exec("UPDATE users SET seen=?, room=? WHERE id=?", Date.now(), /^[A-Z0-9]{4,6}$/.test(r) ? r : "", String(b.id)); return J({ ok: 1 }); }
+    if (p === "/fr/list") return J(this.lst(String(b.id)));
+    if (p === "/fr/add") return J(this.addF(String(b.id), b.code));
+    if (p === "/fr/acc") return J(this.accF(String(b.id), String(b.other)));
+    if (p === "/fr/del") return J(this.delF(String(b.id), String(b.other)));
+    if (p === "/delete") { this.sql.exec("DELETE FROM fr WHERE a=? OR b=?", String(b.id), String(b.id)); this.sql.exec("DELETE FROM users WHERE id=?", String(b.id)); return J({ ok: 1 }); }
+    return J({});
+  }
+}
 
 export class Room {
   constructor(ctx) { this.ctx = ctx; this.reset(); }
   reset() {
     clearTimeout(this.tm); clearTimeout(this.idleT);
-    Object.assign(this, { exists: false, code: "", ph: "lobby", P: [], cap: 7, bots: true, host: null, day: 0, dl: 0, act: {}, vt: {}, dead: [], el: null, w: "", seq: 0 });
+    Object.assign(this, { exists: false, code: "", ph: "lobby", P: [], cap: 7, bots: true, host: null, day: 0, dl: 0, act: {}, vt: {}, dead: [], el: null, w: "", seq: 0, tt: { ...TTD }, sk: new Set() });
   }
-  async fetch() {
+  async fetch(req) {
     const [c, s] = Object.values(new WebSocketPair());
     s.accept();
+    const hu = req.headers.get("x-uid");
+    s.acct = hu ? { uid: hu, nick: decodeURIComponent(req.headers.get("x-nick") || "Player"), av: +req.headers.get("x-av") || 0, country: req.headers.get("x-country") || "" } : null;
     s.addEventListener("message", e => { try { this.msg(s, e.data); } catch (x) {} });
     s.addEventListener("close", () => this.drop(s));
     s.addEventListener("error", () => this.drop(s));
@@ -42,8 +158,8 @@ export class Room {
   view(p) {
     const end = this.ph === "end";
     return {
-      t: "state", code: this.code, ph: this.ph, day: this.day, dl: this.dl, now: Date.now(), cap: this.cap, bots: this.bots, host: this.host, you: p.id, w: this.w,
-      players: this.P.map(q => ({ id: q.id, name: q.name, av: q.av, alive: q.alive, conn: q.conn, bot: q.bot, ready: q.ready, host: q.id === this.host, role: (end || q.id === p.id || (!q.alive && this.ph !== "lobby")) ? q.role : undefined })),
+      t: "state", tt: this.tt, sk: this.sk.size, code: this.code, ph: this.ph, day: this.day, dl: this.dl, now: Date.now(), cap: this.cap, bots: this.bots, host: this.host, you: p.id, w: this.w,
+      players: this.P.map(q => ({ id: q.id, name: q.name, av: q.av, country: q.country || "", alive: q.alive, conn: q.conn, bot: q.bot, ready: q.ready, host: q.id === this.host, role: (end || q.id === p.id || (!q.alive && this.ph !== "lobby")) ? q.role : undefined })),
       mates: MT.includes(p.role) ? this.P.filter(q => MT.includes(q.role) && q.id !== p.id).map(q => q.id) : [],
       insp: p.insp && p.insp.day === this.day ? p.insp : null,
       pick: this.act[p.id] ?? null, vote: this.vt[p.id] ?? null, dead: this.dead, el: this.el,
@@ -59,6 +175,8 @@ export class Room {
     if (d.t === "ready" && this.ph === "lobby") { p.ready = !!d.v; this.push(); }
     else if (d.t === "cap" && this.ph === "lobby" && p.id === this.host) { this.cap = Math.min(7, Math.max(5, this.P.length, Math.floor(+d.v) || 7)); this.push(); }
     else if (d.t === "bots" && this.ph === "lobby" && p.id === this.host) { this.bots = !!d.v; this.push(); }
+    else if (d.t === "tt" && this.ph === "lobby" && p.id === this.host) { const r = TR[d.k]; if (r) { this.tt[d.k] = Math.min(r[1], Math.max(r[0], Math.round(+d.v) || this.tt[d.k])); this.push(); } }
+    else if (d.t === "skip") this.skip(p);
     else if (d.t === "start") this.start(ws, p);
     else if (d.t === "leave") this.leave(p);
     else if (d.t === "act") this.doAct(p, d.target);
@@ -66,12 +184,13 @@ export class Room {
     else if (d.t === "chat") this.chat(ws, p, d);
   }
   join(ws, d) {
-    let p = d.token && this.P.find(x => !x.bot && x.token === d.token);
+    const ac = ws.acct;
+    let p = (d.token && this.P.find(x => !x.bot && x.token === d.token)) || (ac && this.P.find(x => !x.bot && x.uid === ac.uid));
     if (p) { // reconnect
       clearTimeout(p.to);
       if (p.ws && p.ws !== ws) try { p.ws.close(); } catch (e) {}
       p.ws = ws; p.conn = true; ws.pid = p.id;
-      if (this.ph === "lobby") { p.name = clean(d.name); p.av = av(d.av); }
+      if (this.ph === "lobby") { p.name = ac ? ac.nick : clean(d.name); p.av = ac ? ac.av : av(d.av); p.country = ac ? ac.country : ""; }
     } else {
       if (d.create) {
         if (this.exists && this.humans().length) return this.err(ws, "taken");
@@ -79,7 +198,7 @@ export class Room {
       } else if (!this.exists) return this.err(ws, "notfound");
       if (this.ph !== "lobby") return this.err(ws, "started");
       if (this.P.length >= this.cap) return this.err(ws, "full");
-      p = { id: "p" + (++this.seq), token: crypto.randomUUID(), name: clean(d.name), av: av(d.av), ready: false, bot: false, conn: true, ws, alive: true, role: "" };
+      p = { id: "p" + (++this.seq), token: crypto.randomUUID(), name: ac ? ac.nick : clean(d.name), av: ac ? ac.av : av(d.av), uid: ac ? ac.uid : "", country: ac ? ac.country : "", ready: false, bot: false, conn: true, ws, alive: true, role: "" };
       this.P.push(p); ws.pid = p.id;
       if (!this.host) this.host = p.id;
     }
@@ -135,12 +254,18 @@ export class Room {
     this.setPh("role");
   }
   setPh(ph) {
-    clearTimeout(this.tm); this.ph = ph; this.dl = TT[ph] ? Date.now() + TT[ph] * 1000 : 0;
+    clearTimeout(this.tm); this.ph = ph; this.dl = this.tt[ph] ? Date.now() + this.tt[ph] * 1000 : 0;
     if (ph === "night") { this.day++; this.act = {}; this.dead = []; this.el = null; }
     if (ph === "vote") { this.vt = {}; this.el = null; }
+    if (ph === "day") this.sk = new Set();
     const nx = { role: () => this.setPh("night"), night: () => this.resolve(), day: () => this.setPh("vote"), vote: () => this.tally(), elim: () => this.setPh(this.w ? "end" : "night") }[ph];
-    if (nx) this.tm = setTimeout(nx, TT[ph] * 1000);
+    if (nx) this.tm = setTimeout(nx, this.tt[ph] * 1000);
     this.push();
+  }
+  skip(p) { // players can agree to end the discussion early; the server still owns the clock
+    if (this.ph !== "day" || !p.alive) return;
+    this.sk.add(p.id);
+    if (this.P.filter(x => x.alive && !x.bot && x.conn).every(x => this.sk.has(x.id))) this.setPh("vote"); else this.push();
   }
   doAct(p, tg) {
     if (this.ph !== "night" || !p.alive) return;
