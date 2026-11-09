@@ -1,11 +1,26 @@
-name = "mafia-world"
+name = "new-repository"
 main = "worker.js"
 compatibility_date = "2025-09-01"
+
+# Paste your Google OAuth Client ID between the quotes (it is public, not a secret).
+# Leave it empty to keep the game in guest mode.
+[vars]
+GOOGLE_CLIENT_ID = ""
+# Your contact email, shown on the privacy page (/privacy).
+CONTACT_EMAIL = ""
 
 [[durable_objects.bindings]]
 name = "ROOM"
 class_name = "Room"
 
+[[durable_objects.bindings]]
+name = "ACCOUNTS"
+class_name = "Accounts"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Room"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Accounts"]

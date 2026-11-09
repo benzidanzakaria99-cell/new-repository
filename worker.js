@@ -59,9 +59,31 @@ async function api(req, env, u) {
   if (p === "/api/delete" && req.method === "POST") { await acc(env, "/delete", { id: uid }); return J({ ok: 1 }, 200, { "set-cookie": ck("", 0) }); }
   return J({ e: "nf" }, 404);
 }
+
+const escH = s => String(s || "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+// Public privacy policy page (needed for Google's consent screen). Contact email comes from the CONTACT_EMAIL variable.
+function privacy(env) {
+  const mail = escH(env.CONTACT_EMAIL || "(set CONTACT_EMAIL)");
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MAFIA WORLD - Privacy Policy</title><style>body{font:16px/1.7 system-ui,Tahoma,sans-serif;max-width:720px;margin:auto;padding:20px;background:#0b0510;color:#f1e6d0}h1,h2{color:#f3dc8a}a{color:#f3dc8a}section{border-top:1px solid #d4af3755;margin-top:24px;padding-top:8px}</style></head><body>
+<section dir="ltr"><h1>MAFIA WORLD - Privacy Policy</h1><p>MAFIA WORLD is an online multiplayer social-deduction game. This page explains what data we handle. Contact: <a href="mailto:${mail}">${mail}</a>.</p>
+<h2>What we store</h2><ul><li>When you sign in with Google: your Google account identifier and verified email address.</li><li>What you choose: nickname, avatar and country.</li><li>Friend codes, friend requests and friend lists.</li><li>Presence: the last time you were active and the room code while you wait in a lobby.</li></ul>
+<h2>What we do not store</h2><p>Chat messages and voice clips are relayed live to the players in your room and are not saved. We do not store passwords (sign-in is handled by Google). We do not sell your data and show no ads.</p>
+<h2>Cookies and device storage</h2><p>One essential session cookie keeps you signed in (30 days). Your browser also stores audio settings and a reconnect token for your current room.</p>
+<h2>Services we use</h2><p>Google (sign-in) and Cloudflare (hosting and database). Data may be processed on Cloudflare's global infrastructure.</p>
+<h2>Your choices</h2><p>You can edit your profile, or permanently delete your account and all its data from Profile, My account, Delete account. You can also write to the contact email above.</p>
+<h2>Children</h2><p>The game is not intended for children under 13 (or under 16 where local law requires).</p></section>
+<section dir="rtl" lang="ar"><h1>MAFIA WORLD - سياسة الخصوصية</h1><p>MAFIA WORLD لعبة جماعية عبر الإنترنت. توضح هذه الصفحة البيانات التي نتعامل معها. للتواصل: <a href="mailto:${mail}">${mail}</a>.</p>
+<h2>ما نحفظه</h2><ul><li>عند الدخول بحساب Google: معرّف حسابك وبريدك الموثّق.</li><li>ما تختاره أنت: اللقب والصورة والبلد.</li><li>رموز الصداقة وطلباتها وقوائم الأصدقاء.</li><li>حالة الاتصال: آخر وقت نشاط ورمز الغرفة أثناء انتظارك فيها.</li></ul>
+<h2>ما لا نحفظه</h2><p>رسائل الدردشة والمقاطع الصوتية تُنقل مباشرة إلى لاعبي غرفتك ولا تُحفظ. لا نخزّن كلمات مرور (الدخول تتولاه Google). لا نبيع بياناتك ولا نعرض إعلانات.</p>
+<h2>ملفات الارتباط والتخزين</h2><p>ملف ارتباط أساسي واحد يُبقيك مسجّلا (30 يوما). ويحفظ متصفحك أيضا إعدادات الصوت ورمز إعادة الاتصال بغرفتك الحالية.</p>
+<h2>الخدمات المستخدمة</h2><p>Google (تسجيل الدخول) وCloudflare (الاستضافة وقاعدة البيانات). قد تُعالَج البيانات على بنية Cloudflare العالمية.</p>
+<h2>خياراتك</h2><p>يمكنك تعديل ملفك أو حذف حسابك وبياناته نهائيا من: الملف الشخصي، حسابي، حذف الحساب. ويمكنك مراسلتنا على البريد أعلاه.</p>
+<h2>الأطفال</h2><p>اللعبة غير موجهة للأطفال دون 13 سنة (أو دون 16 حيث يشترط القانون المحلي).</p></section></body></html>`;
+}
 export default {
   async fetch(req, env) {
     const u = new URL(req.url);
+    if (u.pathname === "/privacy") return new Response(privacy(env), { headers: { "content-type": "text/html; charset=utf-8" } });
     if (u.pathname.startsWith("/api/")) return api(req, env, u);
     const m = u.pathname.match(/^\/ws\/([A-Za-z0-9]{4,6})$/);
     if (!m) return new Response(PAGE, { headers: { "content-type": "text/html; charset=utf-8" } });
