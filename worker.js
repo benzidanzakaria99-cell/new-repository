@@ -1,11 +1,11 @@
 // MAFIA WORLD server: Cloudflare Worker + one Durable Object per room.
 // The Room object is the ONLY place that knows every role. Each player is sent only their own role.
 const MT = ["mafia", "godfather"];
-const ACT = { mafia: "kill", godfather: "kill", killer: "kill", detective: "ins", doctor: "save", bodyguard: "save" };
+const ACT = { mafia: "kill", godfather: "kill", killer: "kill", detective: "ins", seer: "ins", doctor: "save", bodyguard: "save" };
 const AVN = ["Zakaria", "Rayan", "Sofia", "Alex", "Dreamer", "Luna", "MarocKing"];
 const TTD = { role: 15, night: 45, day: 120, vote: 40, elim: 15 }; // default seconds per phase (host can change)
-const CFGD = { auto: 1, mafia: 1, godfather: 0, doctor: 1, detective: 1, bodyguard: 0, killer: 0 };
-const CR_ = { mafia: [0, 3], godfather: [0, 1], doctor: [0, 2], detective: [0, 2], bodyguard: [0, 1], killer: [0, 1] }; // host-adjustable role counts
+const CFGD = { auto: 1, mafia: 1, godfather: 0, doctor: 1, detective: 1, bodyguard: 0, killer: 0, seer: 0 };
+const CR_ = { mafia: [0, 3], godfather: [0, 1], doctor: [0, 2], detective: [0, 2], bodyguard: [0, 1], killer: [0, 1], seer: [0, 1] }; // host-adjustable role counts
 const TR = { night: [20, 120], day: [30, 300], vote: [15, 120], elim: [5, 30] }; // allowed ranges
 const rnd = a => a[Math.floor(Math.random() * a.length)];
 const shuf = a => a.map(x => [Math.random(), x]).sort((p, q) => p[0] - q[0]).map(x => x[1]);
@@ -14,6 +14,13 @@ const av = n => ((Math.floor(+n) || 0) % 7 + 7) % 7;
 const maj = a => { const c = {}; a.forEach(x => c[x] = (c[x] || 0) + 1); const m = Math.max(...Object.values(c)); return rnd(Object.keys(c).filter(k => c[k] === m)); };
 
 import PAGE from "./page.js";
+import IMGS from "./assets.js";
+const IMGC = {};
+function imgRes(path) { // role card images: decoded once, cached by browsers for a year (bump ?v= in the page when art changes)
+  const m = path.match(/^\/img\/([a-z0-9_]+)\.webp$/), b = m && IMGS[m[1]]; if (!b) return new Response("not found", { status: 404 });
+  if (!IMGC[m[1]]) IMGC[m[1]] = Uint8Array.from(atob(b), c => c.charCodeAt(0));
+  return new Response(IMGC[m[1]], { headers: { "content-type": "image/webp", "cache-control": "public, max-age=31536000, immutable" } });
+}
 const enc = new TextEncoder(), dec = new TextDecoder();
 const b64u = b => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const unb64 = s => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
@@ -55,6 +62,8 @@ async function api(req, env, u) {
   if (p === "/api/me" && req.method === "GET") { const r = await (await acc(env, "/get", { id: uid })).json(); return r.user ? J({ user: r.user }) : J({ e: "auth" }, 401); }
   if (p === "/api/profile" && req.method === "POST") { let b = {}; try { b = await req.json(); } catch (e) {} const r = await (await acc(env, "/update", { id: uid, nick: b.nick, av: b.av, country: b.country })).json(); return r.user ? J({ user: r.user }) : J({ e: "auth" }, 401); }
   if (p === "/api/friends" && req.method === "GET") return J(await (await acc(env, "/fr/list", { id: uid })).json());
+  if (p === "/api/progress" && req.method === "GET") return J(await (await acc(env, "/progress", { id: uid })).json());
+  if (p === "/api/board" && req.method === "GET") return J(await (await acc(env, "/board", { id: uid })).json());
   if (p === "/api/ping" && req.method === "POST") { let b = {}; try { b = await req.json(); } catch (e) {} await acc(env, "/ping", { id: uid, room: String(b.room || "").toUpperCase() }); return J({ ok: 1 }); }
   const fm = p.match(/^\/api\/friends\/(add|accept|decline|remove|cancel)$/);
   if (fm && req.method === "POST") { let b = {}; try { b = await req.json(); } catch (e) {} const o = await (await acc(env, fm[1] === "add" ? "/fr/add" : fm[1] === "accept" ? "/fr/acc" : "/fr/del", { id: uid, code: b.code, other: String(b.id || "") })).json(); return J(o, o.e ? 400 : 200); }
@@ -68,14 +77,14 @@ function privacy(env) {
   const mail = escH(env.CONTACT_EMAIL || "(set CONTACT_EMAIL)");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MAFIA WORLD - Privacy Policy</title><style>body{font:16px/1.7 system-ui,Tahoma,sans-serif;max-width:720px;margin:auto;padding:20px;background:#0b0510;color:#f1e6d0}h1,h2{color:#f3dc8a}a{color:#f3dc8a}section{border-top:1px solid #d4af3755;margin-top:24px;padding-top:8px}</style></head><body>
 <section dir="ltr"><h1>MAFIA WORLD - Privacy Policy</h1><p>MAFIA WORLD is an online multiplayer social-deduction game. This page explains what data we handle. Contact: <a href="mailto:${mail}">${mail}</a>.</p>
-<h2>What we store</h2><ul><li>When you sign in with Google: your Google account identifier and verified email address.</li><li>What you choose: nickname, avatar and country.</li><li>Friend codes, friend requests and friend lists.</li><li>Presence: the last time you were active and the room code while you wait in a lobby.</li></ul>
+<h2>What we store</h2><ul><li>When you sign in with Google: your Google account identifier and verified email address.</li><li>What you choose: nickname, avatar and country.</li><li>Friend codes, friend requests and friend lists.</li><li>Game progress: XP, level, matches played and won. These appear on a public leaderboard together with your nickname, avatar and country.</li><li>Presence: the last time you were active and the room code while you wait in a lobby.</li><li>Game progress: level, points, wins and games played. Your nickname, avatar, country, level and points appear on the public leaderboards to other signed-in players.</li></ul>
 <h2>What we do not store</h2><p>Chat messages and voice clips are relayed live to the players in your room and are not saved. We do not store passwords (sign-in is handled by Google). We do not sell your data and show no ads.</p>
 <h2>Cookies and device storage</h2><p>One essential session cookie keeps you signed in (30 days). Your browser also stores audio settings and a reconnect token for your current room.</p>
 <h2>Services we use</h2><p>Google (sign-in) and Cloudflare (hosting and database). Data may be processed on Cloudflare's global infrastructure.</p>
 <h2>Your choices</h2><p>You can edit your profile, or permanently delete your account and all its data from Profile, My account, Delete account. You can also write to the contact email above.</p>
 <h2>Children</h2><p>The game is not intended for children under 13 (or under 16 where local law requires).</p></section>
 <section dir="rtl" lang="ar"><h1>MAFIA WORLD - سياسة الخصوصية</h1><p>MAFIA WORLD لعبة جماعية عبر الإنترنت. توضح هذه الصفحة البيانات التي نتعامل معها. للتواصل: <a href="mailto:${mail}">${mail}</a>.</p>
-<h2>ما نحفظه</h2><ul><li>عند الدخول بحساب Google: معرّف حسابك وبريدك الموثّق.</li><li>ما تختاره أنت: اللقب والصورة والبلد.</li><li>رموز الصداقة وطلباتها وقوائم الأصدقاء.</li><li>حالة الاتصال: آخر وقت نشاط ورمز الغرفة أثناء انتظارك فيها.</li></ul>
+<h2>ما نحفظه</h2><ul><li>عند الدخول بحساب Google: معرّف حسابك وبريدك الموثّق.</li><li>ما تختاره أنت: اللقب والصورة والبلد.</li><li>رموز الصداقة وطلباتها وقوائم الأصدقاء.</li><li>تقدّمك في اللعبة: نقاط الخبرة والمستوى وعدد المباريات والانتصارات. وتظهر في تصنيف عام مع لقبك وصورتك وبلدك.</li><li>حالة الاتصال: آخر وقت نشاط ورمز الغرفة أثناء انتظارك فيها.</li><li>تقدّمك في اللعبة: المستوى والنقاط والانتصارات وعدد المباريات. يظهر لقبك وصورتك وبلدك ومستواك ونقاطك في لوائح التصنيف العامة للاعبين المسجّلين.</li></ul>
 <h2>ما لا نحفظه</h2><p>رسائل الدردشة والمقاطع الصوتية تُنقل مباشرة إلى لاعبي غرفتك ولا تُحفظ. لا نخزّن كلمات مرور (الدخول تتولاه Google). لا نبيع بياناتك ولا نعرض إعلانات.</p>
 <h2>ملفات الارتباط والتخزين</h2><p>ملف ارتباط أساسي واحد يُبقيك مسجّلا (30 يوما). ويحفظ متصفحك أيضا إعدادات الصوت ورمز إعادة الاتصال بغرفتك الحالية.</p>
 <h2>الخدمات المستخدمة</h2><p>Google (تسجيل الدخول) وCloudflare (الاستضافة وقاعدة البيانات). قد تُعالَج البيانات على بنية Cloudflare العالمية.</p>
@@ -86,6 +95,7 @@ export default {
   async fetch(req, env) {
     const u = new URL(req.url);
     if (u.pathname === "/privacy") return new Response(privacy(env), { headers: { "content-type": "text/html; charset=utf-8" } });
+    if (u.pathname.startsWith("/img/")) return imgRes(u.pathname);
     if (u.pathname.startsWith("/api/")) return api(req, env, u);
     const m = u.pathname.match(/^\/ws\/([A-Za-z0-9]{4,6})$/);
     if (!m) return new Response(PAGE, { headers: { "content-type": "text/html; charset=utf-8" } });
@@ -101,22 +111,57 @@ export default {
 };
 
 // Accounts live in one Durable Object with built-in SQLite. Stored: Google id, verified email, nickname, avatar, country.
-const pub = u => ({ id: u.id, nick: u.nick, av: u.av, country: u.country || "", code: u.code || "" });
+const pub = u => ({ id: u.id, nick: u.nick, av: u.av, country: u.country || "", code: u.code || "", xp: u.xp || 0, lvl: lvl(u.xp), games: u.games || 0, wins: u.wins || 0 });
 const FA = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const lvl = x => Math.floor(Math.sqrt((x || 0) / 100)) + 1; // level 1 at 0 XP, 2 at 100, 3 at 400, 4 at 900...
+const MSN = [{ k: "play", goal: 2, xp: 60 }, { k: "win", goal: 1, xp: 80 }, { k: "smart", goal: 4, xp: 60 }]; // daily missions
+const today = () => new Date().toISOString().slice(0, 10);
+const DAILY_CAP = 500; // max match XP per day (mission bonuses are extra, once per day)
 export class Accounts {
   constructor(ctx) {
     this.sql = ctx.storage.sql;
     this.sql.exec("CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, sub TEXT UNIQUE, email TEXT, nick TEXT, av INTEGER, country TEXT, created INTEGER, last INTEGER)");
     this.sql.exec("CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT)");
-    for (const c of ["code TEXT", "seen INTEGER", "room TEXT"]) { try { this.sql.exec("ALTER TABLE users ADD COLUMN " + c); } catch (e) {} }
+    for (const c of ["code TEXT", "seen INTEGER", "room TEXT", "xp INTEGER DEFAULT 0", "games INTEGER DEFAULT 0", "wins INTEGER DEFAULT 0"]) { try { this.sql.exec("ALTER TABLE users ADD COLUMN " + c); } catch (e) {} }
     this.sql.exec("CREATE UNIQUE INDEX IF NOT EXISTS ucode ON users(code)");
     this.sql.exec("CREATE TABLE IF NOT EXISTS fr(a TEXT, b TEXT, s TEXT, t INTEGER, PRIMARY KEY(a,b))"); // s: p = pending a->b, f = friends (stored both ways)
+    this.sql.exec("CREATE TABLE IF NOT EXISTS ms(uid TEXT, day TEXT, data TEXT, PRIMARY KEY(uid,day))");
     this.fail = new Map();
   }
   row(q, ...b) { return this.sql.exec(q, ...b).toArray()[0]; }
+  getM(uid, day) { const r = this.row("SELECT data FROM ms WHERE uid=? AND day=?", uid, day); return r ? JSON.parse(r.data) : { p: 0, w: 0, c: 0, xp: 0, done: [] }; }
+  mview(m) { const v = { play: m.p, win: m.w, smart: m.c }; return MSN.map(x => ({ k: x.k, goal: x.goal, n: Math.min(v[x.k], x.goal), xp: x.xp, done: m.done.includes(x.k) })); }
+  prog(id) { const u = this.row("SELECT * FROM users WHERE id=?", id); if (!u) return { user: null }; return { user: pub(u), rank: this.rk(u), missions: this.mview(this.getM(id, today())) }; }
+  rk(u) { return this.row("SELECT COUNT(*)+1 AS r FROM users WHERE xp>? OR (xp=? AND (wins>? OR (wins=? AND created<?)))", u.xp || 0, u.xp || 0, u.wins || 0, u.wins || 0, u.created || 0).r; } // same order as the leaderboard list
+  board(id) {
+    const players = this.sql.exec("SELECT id,nick,av,country,xp,wins FROM users ORDER BY xp DESC, wins DESC, created ASC LIMIT 50").toArray().map((u, i) => ({ rank: i + 1, nick: u.nick, av: u.av, country: u.country || "", xp: u.xp || 0, lvl: lvl(u.xp), wins: u.wins || 0, me: u.id === id }));
+    const me = this.row("SELECT * FROM users WHERE id=?", id), rank = me ? this.rk(me) : 0;
+    const countries = this.sql.exec("SELECT country AS c, SUM(xp) AS xp, COUNT(*) AS n FROM users WHERE country != '' GROUP BY country ORDER BY SUM(xp) DESC LIMIT 30").toArray();
+    return { players, rank, countries };
+  }
+  // Called by the Room at the end of a match. XP is computed here from server-observed results only.
+  award(results) {
+    const day = today(), list = [];
+    for (const r of results) {
+      const u = this.row("SELECT * FROM users WHERE id=?", String(r.uid)); if (!u) continue;
+      const m = this.getM(u.id, day), mult = r.humans < 2 ? 0.25 : 1, parts = [];
+      const add = (k, xp) => { if (xp > 0) parts.push({ k, xp: Math.max(1, Math.round(xp * mult)) }); };
+      add("play", 20); if (r.won) add("win", 50); if (r.alive) add("survive", 10);
+      add("vote", r.votes * 10); add("ins", r.ins * 15); add("save", r.save * 25); add("kill", r.kill * 15);
+      let gain = parts.reduce((s, x) => s + x.xp, 0); gain = Math.min(gain, Math.max(0, DAILY_CAP - (m.xp || 0))); m.xp = (m.xp || 0) + gain;
+      m.p++; if (r.won) m.w++; m.c += r.votes + r.ins + r.save + r.kill;
+      const v = { play: m.p, win: m.w, smart: m.c }; let bonus = 0;
+      for (const x of MSN) if (v[x.k] >= x.goal && !m.done.includes(x.k)) { m.done.push(x.k); bonus += x.xp; }
+      const old = lvl(u.xp), xp = (u.xp || 0) + gain + bonus;
+      this.sql.exec("UPDATE users SET xp=?, games=games+1, wins=wins+? WHERE id=?", xp, r.won ? 1 : 0, u.id);
+      this.sql.exec("INSERT OR REPLACE INTO ms VALUES(?,?,?)", u.id, day, JSON.stringify(m));
+      list.push({ id: r.id, gain: gain + bonus, parts, bonus, up: lvl(xp) > old, xp, lvl: lvl(xp), games: (u.games || 0) + 1, wins: (u.wins || 0) + (r.won ? 1 : 0) });
+    }
+    return { list };
+  }
   fcode() { for (;;) { const c = Array.from(crypto.getRandomValues(new Uint8Array(8)), x => FA[x % 32]).join(""); if (!this.row("SELECT 1 AS x FROM users WHERE code=?", c)) return c; } }
   ensure(u) { if (!u.code) { this.sql.exec("UPDATE users SET code=? WHERE id=?", this.fcode(), u.id); u = this.row("SELECT * FROM users WHERE id=?", u.id); } return u; }
-  pf(u, now) { const on = u.seen && u.seen > now - 90000; return { id: u.id, nick: u.nick, av: u.av, country: u.country || "", online: !!on, room: on ? (u.room || "") : "" }; }
+  pf(u, now) { const on = u.seen && u.seen > now - 90000; return { id: u.id, nick: u.nick, av: u.av, country: u.country || "", lvl: lvl(u.xp), online: !!on, room: on ? (u.room || "") : "" }; }
   lst(id) { const now = Date.now(), q = s => this.sql.exec(s, id).toArray().map(u => this.pf(u, now));
     return { friends: q("SELECT u.* FROM fr JOIN users u ON u.id=fr.b WHERE fr.a=? AND fr.s='f' ORDER BY u.nick"), incoming: q("SELECT u.* FROM fr JOIN users u ON u.id=fr.a WHERE fr.b=? AND fr.s='p'"), outgoing: q("SELECT u.* FROM fr JOIN users u ON u.id=fr.b WHERE fr.a=? AND fr.s='p'") }; }
   addF(id, code) {
@@ -149,6 +194,9 @@ export class Accounts {
       return J({ user: pub(this.ensure(this.row("SELECT * FROM users WHERE id=?", u.id))) });
     }
     if (p === "/ping") { const r = String(b.room || ""); this.sql.exec("UPDATE users SET seen=?, room=? WHERE id=?", Date.now(), /^[A-Z0-9]{4,6}$/.test(r) ? r : "", String(b.id)); return J({ ok: 1 }); }
+    if (p === "/progress") return J(this.prog(String(b.id)));
+    if (p === "/board") return J(this.board(String(b.id)));
+    if (p === "/award") return J(this.award(Array.isArray(b.results) ? b.results : []));
     if (p === "/fr/list") return J(this.lst(String(b.id)));
     if (p === "/fr/add") return J(this.addF(String(b.id), b.code));
     if (p === "/fr/acc") return J(this.accF(String(b.id), String(b.other)));
@@ -159,7 +207,7 @@ export class Accounts {
 }
 
 export class Room {
-  constructor(ctx) { this.ctx = ctx; this.reset(); }
+  constructor(ctx, env) { this.ctx = ctx; this.env = env; this.reset(); }
   reset() {
     clearTimeout(this.tm); clearTimeout(this.idleT);
     Object.assign(this, { exists: false, code: "", ph: "lobby", P: [], cap: 7, bots: true, host: null, day: 0, dl: 0, act: {}, vt: {}, dead: [], el: null, w: "", seq: 0, tt: { ...TTD }, sk: new Set(), cfg: { ...CFGD } });
@@ -182,7 +230,7 @@ export class Room {
   view(p) {
     const end = this.ph === "end";
     return {
-      t: "state", cfg: this.cfg, tt: this.tt, sk: this.sk.size, code: this.code, ph: this.ph, day: this.day, dl: this.dl, now: Date.now(), cap: this.cap, bots: this.bots, host: this.host, you: p.id, w: this.w,
+      t: "state", reward: p.reward || null, cfg: this.cfg, tt: this.tt, sk: this.sk.size, code: this.code, ph: this.ph, day: this.day, dl: this.dl, now: Date.now(), cap: this.cap, bots: this.bots, host: this.host, you: p.id, w: this.w,
       players: this.P.map(q => ({ id: q.id, name: q.name, av: q.av, country: q.country || "", alive: q.alive, conn: q.conn, bot: q.bot, ready: q.ready, host: q.id === this.host, role: (end || q.id === p.id || (!q.alive && this.ph !== "lobby")) ? q.role : undefined })),
       mates: MT.includes(p.role) ? this.P.filter(q => MT.includes(q.role) && q.id !== p.id).map(q => q.id) : [],
       insp: p.insp && p.insp.day === this.day ? p.insp : null,
@@ -257,7 +305,7 @@ export class Room {
     if (!this.humans().filter(x => x.id !== this.host).every(x => x.ready)) return this.err(ws, "wait");
     const n = this.bots ? Math.max(this.cap, this.P.length) : this.P.length, c = this.cfg; // player count the match will really have
     if (n < 5) return this.err(ws, "min");
-    if (!c.auto) { const mt = c.mafia + c.godfather; if (mt < 1 || mt * 2 >= n || mt + c.doctor + c.detective + c.bodyguard + c.killer > n) return this.err(ws, "roles"); }
+    if (!c.auto) { const mt = c.mafia + c.godfather; if (mt < 1 || mt * 2 >= n || mt + c.doctor + c.detective + c.bodyguard + c.killer + c.seer > n) return this.err(ws, "roles"); }
     if (this.bots) this.fillBots();
     this.begin();
   }
@@ -277,10 +325,11 @@ export class Room {
       r.push("detective", "doctor");
       if (n >= 8) r.push("bodyguard");
       if (n >= 9) r.push("killer");
-    } else for (const k of ["mafia", "godfather", "detective", "doctor", "bodyguard", "killer"]) for (let i = 0; i < this.cfg[k]; i++) r.push(k);
+    } else for (const k of ["mafia", "godfather", "detective", "doctor", "bodyguard", "killer", "seer"]) for (let i = 0; i < this.cfg[k]; i++) r.push(k);
     while (r.length < n) r.push("citizen");
     r = shuf(r);
-    this.P.forEach((p, i) => { p.role = r[i]; p.alive = true; p.insp = null; });
+    this.P.forEach((p, i) => { p.role = r[i]; p.alive = true; p.insp = null; p.st = { votes: 0, ins: 0, save: 0, kill: 0, acted: 0, chance: 0 }; p.reward = null; });
+    this.awarded = false;
     this.day = 0; this.w = ""; this.el = null; this.dead = [];
     this.setPh("role");
   }
@@ -288,16 +337,28 @@ export class Room {
     clearTimeout(this.tm); this.ph = ph; this.dl = this.tt[ph] ? Date.now() + this.tt[ph] * 1000 : 0;
     if (ph === "night") { this.day++; this.act = {}; this.dead = []; this.el = null; }
     if (ph === "vote") { this.vt = {}; this.el = null; }
+    if (ph === "end") this.award();
     if (ph === "day") this.sk = new Set();
     const nx = { role: () => this.setPh("night"), night: () => this.resolve(), day: () => this.setPh("vote"), vote: () => this.tally(), elim: () => this.setPh(this.w ? "end" : "night") }[ph];
     if (nx) this.tm = setTimeout(nx, this.tt[ph] * 1000);
+    this.push();
+  }
+  async award() { // XP for signed-in players; practice with bots only gives 25%; matches under 2 rounds give nothing
+    if (this.awarded || !this.env || !this.env.ACCOUNTS || this.day < 2) return;
+    this.awarded = true;
+    const team = p => MT.includes(p.role) ? "m" : p.role === "killer" ? "k" : "c", humans = this.humans().length;
+    const results = this.P.filter(p => !p.bot && p.uid && p.conn && p.st && (p.st.acted || !p.st.chance)).map(p => ({ uid: p.uid, id: p.id, won: team(p) === this.w, alive: p.alive, votes: p.st.votes, ins: p.st.ins, save: p.st.save, kill: p.st.kill, humans }));
+    try {
+      const o = await (await this.env.ACCOUNTS.get(this.env.ACCOUNTS.idFromName("main")).fetch("https://acc/award", { method: "POST", body: JSON.stringify({ results }) })).json();
+      for (const x of o.list || []) { const p = this.pl(x.id); if (p) p.reward = x; }
+    } catch (e) {}
     this.push();
   }
   again(p) { // host starts a rematch in the same room: bots leave, humans return to the waiting room
     if (this.ph !== "end" || p.id !== this.host) return;
     clearTimeout(this.tm);
     this.P = this.P.filter(x => !x.bot);
-    this.P.forEach(x => { x.ready = false; x.alive = true; x.role = ""; x.insp = null; });
+    this.P.forEach(x => { x.ready = false; x.alive = true; x.role = ""; x.insp = null; x.reward = null; });
     Object.assign(this, { ph: "lobby", day: 0, dl: 0, act: {}, vt: {}, dead: [], el: null, w: "", sk: new Set() });
     this.push();
   }
@@ -314,30 +375,34 @@ export class Room {
     if (p.role === "bodyguard" && t.id === p.id) return;
     if (a === "kill" && MT.includes(p.role) && MT.includes(t.role)) return;
     if (a === "ins" && this.act[p.id] != null) return;
-    this.act[p.id] = t.id;
-    if (a === "ins") p.insp = { day: this.day, id: t.id, m: MT.includes(t.role) && t.role !== "godfather" };
+    this.act[p.id] = t.id; p.st.acted++;
+    if (a === "ins") { p.insp = { day: this.day, id: t.id, m: MT.includes(t.role) && t.role !== "godfather" }; if (p.role === "seer") p.insp.role = t.role; /* the Seer learns the exact role */ if (MT.includes(t.role)) p.st.ins++; }
     this.push();
   }
   doVote(p, tg) {
     if (this.ph !== "vote" || !p.alive) return;
     const t = this.pl(tg);
     if (!t || !t.alive || t.id === p.id) return;
-    this.vt[p.id] = t.id;
+    this.vt[p.id] = t.id; p.st.acted++;
     if (this.P.filter(x => x.alive && !x.bot && x.conn).every(x => this.vt[x.id] != null)) this.tally(); else this.push();
   }
   resolve() {
-    const al = this.P.filter(p => p.alive), ok = v => v != null && al.some(q => q.id === v), kills = [], saves = [];
+    const al = this.P.filter(p => p.alive), ok = v => v != null && al.some(q => q.id === v), kills = [], saves = [], sv = [], kv = [];
+    al.forEach(p => { if (!p.bot && ACT[p.role]) p.st.chance++; }); // a night action was available to this player
     const team = al.filter(p => MT.includes(p.role)), f = q => !MT.includes(q.role);
     let pk = team.map(p => this.act[p.id]).filter(v => ok(v) && f(this.pl(v)));
     if (!pk.length && team.length && team.every(p => p.bot || !p.conn)) { const c = al.filter(f); if (c.length) pk = [rnd(c).id]; }
-    if (pk.length) kills.push(maj(pk));
+    const mk = pk.length ? maj(pk) : null; if (mk) kills.push(mk);
     for (const p of al) {
       const auto = p.bot || !p.conn;
-      if (p.role === "killer") { let v = this.act[p.id]; if (!ok(v) && auto) v = rnd(al.filter(q => q.id !== p.id)).id; if (ok(v)) kills.push(v); }
-      if (p.role === "doctor" || p.role === "bodyguard") { let v = this.act[p.id]; if (!ok(v) && auto) v = rnd(al.filter(q => p.role === "doctor" || q.id !== p.id)).id; if (ok(v)) saves.push(v); }
+      if (p.role === "killer") { let v = this.act[p.id]; if (!ok(v) && auto) v = rnd(al.filter(q => q.id !== p.id)).id; if (ok(v)) { kills.push(v); kv.push([p, v]); } }
+      if (p.role === "doctor" || p.role === "bodyguard") { let v = this.act[p.id]; if (!ok(v) && auto) v = rnd(al.filter(q => p.role === "doctor" || q.id !== p.id)).id; if (ok(v)) { saves.push(v); sv.push([p, v]); } }
     }
     const ds = [...new Set(kills)].filter(i => !saves.includes(i)).map(i => this.pl(i));
     ds.forEach(p => p.alive = false);
+    sv.forEach(([a, v]) => { if (kills.includes(v)) a.st.save++; }); // a protected player was targeted
+    if (mk && ds.some(x => x.id === mk)) team.forEach(p => { if (!p.bot) p.st.kill++; });
+    kv.forEach(([a, v]) => { if (ds.some(x => x.id === v)) a.st.kill++; });
     this.dead = ds.map(p => ({ id: p.id, name: p.name, role: p.role }));
     this.w = this.win();
     this.setPh(this.w ? "end" : "day");
@@ -345,11 +410,12 @@ export class Room {
   tally() {
     clearTimeout(this.tm);
     const al = this.P.filter(p => p.alive), c = {};
+    al.forEach(p => { if (!p.bot) p.st.chance++; }); // a vote was available to this player
     for (const p of al) {
       let v = null;
       if (p.bot) { const o = al.filter(q => q.id !== p.id && !(MT.includes(p.role) && MT.includes(q.role))); const pool = o.length ? o : al.filter(q => q.id !== p.id); if (pool.length) v = rnd(pool).id; }
       else v = this.vt[p.id];
-      if (v != null && v !== p.id && al.some(q => q.id === v)) c[v] = (c[v] || 0) + 1;
+      if (v != null && v !== p.id && al.some(q => q.id === v)) { c[v] = (c[v] || 0) + 1; const tg = this.pl(v); if (!p.bot && tg && (MT.includes(tg.role) || tg.role === "killer")) p.st.votes++; }
     }
     const ks = Object.keys(c);
     if (ks.length) { const m = Math.max(...ks.map(k => c[k])), e = this.pl(rnd(ks.filter(k => c[k] === m))); e.alive = false; this.el = { id: e.id, name: e.name, role: e.role }; } else this.el = null;
