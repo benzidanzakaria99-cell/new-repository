@@ -234,7 +234,7 @@ export class Room {
       players: this.P.map(q => ({ id: q.id, name: q.name, av: q.av, country: q.country || "", alive: q.alive, conn: q.conn, bot: q.bot, ready: q.ready, host: q.id === this.host, role: (end || q.id === p.id || (!q.alive && this.ph !== "lobby")) ? q.role : undefined })),
       mates: MT.includes(p.role) ? this.P.filter(q => MT.includes(q.role) && q.id !== p.id).map(q => q.id) : [],
       insp: p.insp && p.insp.day === this.day ? p.insp : null,
-      pick: this.act[p.id] ?? null, vote: this.vt[p.id] ?? null, dead: this.dead, el: this.el,
+      pick: this.act[p.id] ?? null, votes: (this.ph === "vote" || this.ph === "elim") ? { ...this.vt } : {}, /* open voting: who voted for whom is public in these two phases only; night actions stay private */ vote: this.vt[p.id] ?? null, dead: this.dead, el: this.el,
     };
   }
   push() { this.P.forEach(p => p.ws && this.send(p.ws, this.view(p))); }
@@ -413,7 +413,7 @@ export class Room {
     al.forEach(p => { if (!p.bot) p.st.chance++; }); // a vote was available to this player
     for (const p of al) {
       let v = null;
-      if (p.bot) { const o = al.filter(q => q.id !== p.id && !(MT.includes(p.role) && MT.includes(q.role))); const pool = o.length ? o : al.filter(q => q.id !== p.id); if (pool.length) v = rnd(pool).id; }
+      if (p.bot) { const o = al.filter(q => q.id !== p.id && !(MT.includes(p.role) && MT.includes(q.role))); const pool = o.length ? o : al.filter(q => q.id !== p.id); if (pool.length) v = rnd(pool).id; if (v != null) this.vt[p.id] = v; }
       else v = this.vt[p.id];
       if (v != null && v !== p.id && al.some(q => q.id === v)) { c[v] = (c[v] || 0) + 1; const tg = this.pl(v); if (!p.bot && tg && (MT.includes(tg.role) || tg.role === "killer")) p.st.votes++; }
     }
