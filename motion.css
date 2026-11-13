@@ -1,0 +1,114 @@
+/* MAFIA WORLD - Character Animation System (supplied by the owner, unchanged) */
+
+.mafia-player {
+  position: absolute;
+  transform-origin: 50% 85%;
+  will-change: transform, opacity;
+  transition:
+    transform 900ms ease,
+    filter 900ms ease;
+}
+
+/* Sleeping */
+.mafia-player.sleeping {
+  animation: sleepingBreath 3.8s ease-in-out infinite;
+  filter: brightness(0.72);
+}
+
+@keyframes sleepingBreath {
+  0%, 100% {
+    transform: translateY(0) scale(1);
+  }
+  50% {
+    transform: translateY(2px) scale(1.006);
+  }
+}
+
+/* Waking up */
+.mafia-player.waking {
+  animation: wakingUp 1.8s ease-out forwards;
+}
+
+@keyframes wakingUp {
+  0% {
+    transform: translateY(12px) rotate(5deg);
+    filter: brightness(0.7);
+  }
+  55% {
+    transform: translateY(-5px) rotate(-2deg);
+    filter: brightness(0.95);
+  }
+  100% {
+    transform: translateY(0) rotate(0);
+    filter: brightness(1);
+  }
+}
+
+/* Awake */
+.mafia-player.awake {
+  transform: translateY(0) rotate(0);
+  filter: brightness(1);
+}
+
+/* Looking around */
+.mafia-player.acting {
+  animation: lookingAround 2s ease-in-out infinite;
+}
+
+@keyframes lookingAround {
+  0%, 100% { transform: rotate(0deg); }
+  30% { transform: rotate(-2deg); }
+  70% { transform: rotate(2deg); }
+}
+
+/* Returning to sleep */
+.mafia-player.returning {
+  animation: returnToSleep 1.7s ease-in forwards;
+}
+
+@keyframes returnToSleep {
+  0% {
+    transform: translateY(0) rotate(0);
+    filter: brightness(1);
+  }
+  100% {
+    transform: translateY(12px) rotate(5deg);
+    filter: brightness(0.72);
+  }
+}
+
+/* Night and day atmosphere */
+.mafia-scene {
+  transition:
+    filter 4s ease,
+    background-color 4s ease;
+}
+
+.mafia-scene.night {
+  filter: brightness(0.72) saturate(0.85);
+}
+
+.mafia-scene.dawn {
+  filter: brightness(0.85) sepia(0.12);
+}
+
+.mafia-scene.day {
+  filter: brightness(1) saturate(1.05);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mafia-player,
+  .mafia-player.sleeping,
+  .mafia-player.waking,
+  .mafia-player.acting,
+  .mafia-player.returning,
+  .mafia-scene {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* ---- integration additions (layout only; motions above are untouched) ---- */
+.mafia-scene{position:absolute;inset:0;pointer-events:none;z-index:1}
+.mafia-player img{width:100%;height:100%;object-fit:contain;object-position:50% 100%;display:block;-webkit-mask-image:linear-gradient(#000 84%,transparent);mask-image:linear-gradient(#000 84%,transparent)}
+.mafia-player.dead{filter:grayscale(1) brightness(.45)!important;animation:none!important;transform:translateY(7%)!important}
