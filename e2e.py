@@ -47,7 +47,11 @@ with sync_playwright() as p:
     A.wait_for_timeout(600);DS=lambda pg:pg.evaluate("[...document.querySelectorAll('.mafia-player.dead')].map(e=>e.dataset.playerId).sort().join()")
     dsA,dsB=DS(A),DS(B);dead_ids=[i for i,v in get(f'/__state?code={code}')['alive'].items() if not v]
     print('DEAD A:',dsA,'| B:',dsB,'| server:',sorted(dead_ids),'| ph A/B',A.evaluate('NET.st.ph'),B.evaluate('NET.st.ph'),'day',A.evaluate('NET.st.day'))
-    ok('same dead set shown on both screens at dawn (and equals the server)',dsA==dsB==','.join(sorted(dead_ids)))
+    for k,pg in (('A',A),('B',B)):  # each viewer sits themselves first, so the 7 seated players differ per viewer; compare per viewer
+        seated=pg.evaluate("[...document.querySelectorAll('.mafia-player')].map(e=>e.dataset.playerId)")
+        want=','.join(sorted(i for i in dead_ids if i in seated));bench=len([i for i in dead_ids if i not in seated])
+        ok(f'{k}: dead seated characters match the server exactly',DS(pg)==want)
+        ok(f'{k}: dead players on the bench strip are marked',pg.evaluate("document.querySelectorAll('.bn2.x').length")==bench)
     A.wait_for_timeout(7000);B.wait_for_timeout(500)
     for k,pg in (('A',A),('B',B)):
         sc=pg.evaluate("window.__scene");ok(f'{k}: scene goes night -> dawn -> day',all(x in sc for x in ['night','dawn','day']) or ('dawn' in ' '.join(sc) and 'day' in ' '.join(sc)))
